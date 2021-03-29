@@ -1,0 +1,421 @@
+---
+---
+title: "DATA 622 HW3 - Classification using KNN, Decision Trees, Random Forests and Gradient Boosting"
+author: "Mael Illien, Dhairav Chhatbar, Santosh Manjrekar"
+date: "3/19/2021"
+output: 
+  html_document:
+    code_folding: show
+    theme: cosmo
+    highlight: tango
+    toc: true
+    number_section: false
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+    df_print: paged
+---
+
+# KNN, Decision Trees, Random Forests and Gradient Boosting
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup
+
+```{r message=FALSE, warning=FALSE}
+library(skimr)
+library(tidyverse)
+library(caret) # For featureplot, classification report
+library(corrplot) # For correlation matrix
+library(AppliedPredictiveModeling)
+library(rpart.plot) #plotting decision trees
+```
+
+# Penguins Dataset
+
+## Data Exploration
+
+The penguin dataset is composed of 344 observations with 8 variables, 5 of which are numeric and 3 which are qualitative. The dataset is mostly complete with just a few observations with missing values that will need to be handled. 
+
+```{r echo=FALSE}
+penguins <- palmerpenguins::penguins
+skim(penguins)
+```
+
+```{r echo=FALSE}
+penguins
+```
+
+The target variable of interest is the species of penguins, which are categorized into three groups: Adelie, Gentoo and Chinstrap penguins.
+
+```{r echo=FALSE}
+unique(penguins$species)
+```
+
+### Species Distribution on Islands
+
+From this plot, we can make a few key observations: 
+
+- Gentoo penguins are only found on Biscoe Island
+- Chinstrap pengiuns only found on Dream Island
+- Adelie penguins are found on all three islands
+- Torgersen Island only has Adelie penguins
+
+These island observations are valuable information in differentiating penguin species.
+
+```{r echo=FALSE}
+ggplot(penguins, aes(x = island, fill = species)) +
+  geom_bar(alpha = 0.8) +
+  scale_fill_manual(values = c("darkorange","purple","cyan4"),
+                    guide = FALSE) +
+  theme_minimal() +
+  facet_wrap(~species, ncol = 1) +
+  coord_flip() +
+  ggtitle("Species Distribution by Island")
+```
+
+### Sex Distribution
+
+However, the sex of the penguins does not offer much information as the proportion is about even across all species. We can also note a few missing observations labeled as NA. 
+
+```{r echo=FALSE}
+ggplot(penguins, aes(x = sex, fill = species)) +
+  geom_bar(alpha = 0.8) +
+  scale_fill_manual(values = c("darkorange","purple","cyan4"),
+                    guide = FALSE) +
+  theme_minimal() +
+  facet_wrap(~species, ncol = 1) +
+  coord_flip() +
+  ggtitle("Sex Distribution by Species")
+```
+
+### Missing Values & Variable Selection
+
+We noted from the data summary above that 11 observations were missing for the `sex` variable. There is also no reason to believe that the `year` the observation was taken would have any impact on the morphology of the penguins. We are not looking for any time series modeling. Therefore, we also drop `year` from our predictor variables. There are also two observations which are missing body measurements altogether, so these rows will be dropped altogether.
+
+```{r}
+penguins[!complete.cases(penguins), ]
+```
+
+```{r}
+penguins <- penguins[complete.cases(penguins), ]
+penguins <- dplyr::select(penguins, -c(year, island))
+```
+
+### Body Measurements
+
+When looking at body measurements we see that Adelie and Chinstrap penguins largely overlap except for `bill_length`. This suggests that we might be able to use `bill_depth`, `body_mass` and `flipper_length` to differentiate the Gentoo penguins from the other species. However, the Adelie penguin stands out from the other others in `bill_length`
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+penguins %>%  gather(key = "variable", value = "measurement", bill_length_mm:body_mass_g) %>% 
+  ggplot(aes(species, measurement)) + geom_boxplot(aes(fill=species)) + 
+  facet_wrap(~variable, scales = "free") +
+  scale_fill_manual(values = c("darkorange","purple","cyan4")) +
+  theme_minimal() +
+  ggtitle("Body Measurements Boxplot")
+```
+
+The scatterplot matrix below is another way to visualize the separation and overlap between classes for different combination of variables. We see that in general, Gentoo penguins standalone as a separate group. However, Adelie and Chinstrap penguins overlap in the comparison of `bill_depth`, `flipper_length` and `body_mass`.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+colors <- c("darkorange","purple","cyan4")[unclass(penguins$species)]
+pairs(penguins[,2:5], col=colors, oma=c(3,3,3,15))
+legend("bottomright", fill = unique(penguins$species), legend = c(levels(penguins$species)))
+```
+
+We see on the univariate feature plots below that the data is aproximatelly normally distributed.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.dim=c(12,6)}
+transparentTheme(trans = .9)
+featurePlot(x = penguins[, 2:5], 
+            y = penguins$species, 
+            plot = "density", 
+            ## Pass in options to xyplot() to 
+            ## make it prettier
+            scales = list(x = list(relation="free"), 
+                          y = list(relation="free")), 
+            adjust = 1.5, 
+            pch = "|", 
+            layout = c(4, 1), 
+            auto.key = list(columns = 3))
+```
+
+### Multicollinearity
+
+Taking a look at the correlation matrix below, we can make a few observations, notably that `flipper_length` is highly positively correlated with `body_mass` which makes sense given that larger penguins should have larger flippers. The other correlations are less obvious to interpret. Given that the dataset only contains a few predictors, we choose not to exclude any variables based on multicollinearity at this time.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+M <-cor(penguins[, 2:5])
+p.mat <- cor.mtest(penguins[, 2:5])
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+corrplot(M, method="color", col=col(200),  
+         type="upper", order="hclust", 
+         addCoef.col = "black", # Add coefficient of correlation
+         tl.col="black", tl.srt=45, #Text label color and rotation
+         # Combine with significance
+         p.mat = p.mat$p, sig.level = 0.01, insig = "blank", 
+         # hide correlation coefficient on the principal diagonal
+         diag=FALSE 
+         ) 
+```
+
+## K-Nearest Neighbors
+
+The KNN algorithms requires minor data processing. Firstly, predictor values that are factors should be conversted to numeric. Secondly, because KNN uses distance between points to determine their classification, it is important for the points to be on the same scale. Here we pass the `scale` argument to the `preProcess` parameter of the training function to standardize each variable. The data is then split into training and testing sets 80%/20%. The test set contains 65 observations and the train set 268 observations. 
+
+### Processing
+
+```{r message=FALSE, warning=FALSE}
+# Processing
+penguins_knn <- penguins
+penguins_knn$sex <- as.numeric(penguins_knn$sex)-1 # recode as 1 or 0
+# Data Partitioning
+set.seed(622)
+trainIndex <- createDataPartition(penguins_knn$species, p = .8, list = FALSE, times = 1)
+knn_training <- penguins_knn[trainIndex,]
+knn_testing  <- penguins_knn[-trainIndex,]
+```
+
+### Modeling
+
+We performed 10-fold cross-validation in the training data to determine the optimal parameter k for our model. The resulting accuracy for each value of k is displayed and plotted below. The maximum accuracy is reached with values of k=3 and k=4 but the training procedure automatically chose k=4 as the best model. We gain a full percentage point in cross-validation accuracy on the training data using the tuned model over models with slightly more or fewer neighbors. 
+
+```{r}
+trControl <- trainControl(method  = "cv",
+                          number  = 10)
+knn.fit <- train(species ~ .,
+             method     = "knn",
+             tuneGrid   = expand.grid(k = 1:10),
+             trControl  = trControl,
+             preProcess = c("center","scale"),
+             metric     = "Accuracy",
+             data       = knn_training)
+```
+
+```{r}
+knn.fit
+```
+
+```{r echo=FALSE}
+plot(knn.fit)
+```
+
+### Results
+
+The evaluation of the tuned K-NN model on the testing data reveals that the model was able to classify species with perfect accuracy. However, it is important to note that 100% prediction accuracy is typically rare and that this model benefitted from fairly clean class separations and limited overlap in the original dataset. 
+
+```{r}
+knnPredict <- predict(knn.fit, newdata = knn_testing) 
+confusionMatrix(knnPredict, knn_testing$species)
+```
+
+# Loan Approval Dataset
+
+```{r}
+loan <- read.csv('https://raw.githubusercontent.com/maelillien/data622/main/hw3/Loan_approval.csv', header = TRUE)
+loan2 <- loan
+```
+
+```{r}
+skim(loan)
+```
+
+
+
+
+## Data Exploration
+
+```{r}
+loan %>% select(is.factor)
+```
+
+
+## Data Processing
+
+```{r}
+loan$Loan_Status <- as.factor(ifelse(loan$Loan_Status=='Y',1,0))
+loan$Property_Area <- as.factor(loan$Property_Area)
+loan$Self_Employed <- as.factor(ifelse(loan$Self_Employed=='Yes',1,0))
+loan$Education <- as.factor(ifelse(loan$Education=='Graduate',1,0))
+loan$Married <- as.factor(ifelse(loan$Married=='Yes',1,0))
+loan$Gender<- as.factor(ifelse(loan$Gender=='Female',1,0))
+levels(loan$Dependents) <- c(levels((loan$Dependents)), "3")
+loan$Dependents[loan$Dependents == '3+'] <- '3'
+loan <- loan %>% mutate(totalIncome = ApplicantIncome + CoapplicantIncome)
+loan <- select(loan, -c('Loan_ID','ApplicantIncome','CoapplicantIncome'))
+loan <- loan[complete.cases(loan), ]
+```
+
+```{r}
+trainIndex <- createDataPartition(loan$Loan_Status, p = .7, list = FALSE, times = 1)
+tree_training <- loan[ trainIndex,]
+tree_testing  <- loan[-trainIndex,]
+```
+
+
+## Decision Trees
+
+### Simple Tree
+
+```{r}
+library(tree)
+set.seed(622)
+tree.fit <- tree(Loan_Status ~ ., data=loan)
+summary(tree.fit)
+```
+
+Not all variables are used.
+
+```{r}
+plot(tree.fit)
+text(tree.fit, cex=.75, pretty=0)
+```
+
+```{r}
+tree.pred <- predict(tree.fit,tree_testing,type="class")
+cm <- table(tree.pred, tree_testing$Loan_Status)
+cm
+sum(diag(cm)) / sum(cm)
+```
+
+### Other Representation
+
+Choose only 1 way to display the tree
+
+```{r}
+library(rpart)
+rpart.tree.fit <- rpart(Loan_Status ~ ., data=loan)
+plot(rpart.tree.fit, uniform=TRUE, branch=0.6, margin=0.05)
+text(rpart.tree.fit, all=TRUE, use.n=TRUE)
+```
+
+```{r fig.dim=c(16,8)}
+library(partykit)
+rparty.tree <- as.party(rpart.tree.fit)
+plot(rparty.tree)
+```
+
+### Cross Validated Tree
+
+```{r}
+set.seed(622)
+cv.dt <- cv.tree(tree.fit, FUN=prune.misclass)
+par(mfrow=c(1,2))
+plot(cv.dt$size ,cv.dt$dev ,type="b")
+plot(cv.dt$k , cv.dt$dev ,type="b")
+```
+
+Best pruned tree
+
+```{r}
+pruned.dt <- prune.misclass(tree.fit,best=2)
+plot(pruned.dt)
+text(pruned.dt,pretty=0)
+```
+
+Evaluation of pruned tree on test set.
+
+```{r}
+tree.pred <- predict(pruned.dt,tree_testing,type="class")
+cm <- table(tree.pred, tree_testing$Loan_Status)
+cm
+sum(diag(cm)) / sum(cm)
+```
+
+## Decision Tree (DC)
+Data conversion
+```{r}
+loan2 <- loan2[complete.cases(loan2),]
+loan2$Gender <- as.factor(loan2$Gender)
+loan2$Married <- as.factor(loan2$Married)
+loan2$Self_Employed <- as.factor(loan2$Self_Employed)
+loan2$Credit_History <- as.factor(loan2$Credit_History)
+loan2$Property_Area <- as.factor(loan2$Property_Area)
+loan2$Loan_Status <- as.factor(loan2$Loan_Status)
+loan2 <- loan2 %>% dplyr::select(-Loan_ID)
+```
+
+Split test/train data
+```{r}
+set.seed(55)
+
+s <- createDataPartition(loan2$Loan_Status, p = .80, list = FALSE, times = 1)
+loan2_train <- loan2[s,]
+loan2_test <- loan2[-s,]
+
+```
+
+
+Grow decision tree using Information Gain split function.  
+Cost Complexity set to 0 to grow base line tree to later prune.  
+The CP is the amount by which splitting a given node improved the relative error, in other words, it is the minimum improvement in the overall model needed at each node to justify the split.
+```{r}
+loan_dt <- rpart(Loan_Status ~., data = loan2_train, method = "class",
+                 parms = list(split="information"), control = rpart.control(cp=0))
+loan_dt
+
+```
+Plot tree
+
+```{r, fig.height=10, fig.width=14}
+rpart.plot(loan_dt)
+```
+
+Predict loan_status on test set and calculate accuracy
+```{r}
+loan_dt_pred <- predict(loan_dt, loan2_test, type = "class")
+loan_dt_table <- table(Actual = loan2_test$Loan_Status, Predicted = loan_dt_pred)
+loan_dt_table
+acc_dt_base <-  sum(diag(loan_dt_table))/sum(loan_dt_table)
+acc_dt_base
+```
+
+Find Cost Complexity value that has the lowest cross-validation error rate
+
+```{r}
+printcp(loan_dt)
+plotcp(loan_dt)
+
+
+min_err <- loan_dt$cptable[which.min(loan_dt$cptable[,"xerror"]),"CP"]
+min_err
+```
+
+Prune tree based on CP value that has lowest cross validation error rate
+
+```{r}
+loan_dt_prune <- prune(loan_dt, min_err)
+plotcp(loan_dt_prune)
+rpart.plot(loan_dt_prune)
+```
+
+Accuracy of pruned tree
+```{r}
+loan_dt_prune_pred <- predict(loan_dt_prune, loan2_test, type = "class")
+loan_dt_prune_table <- table(Actual = loan2_test$Loan_Status, Predicted = loan_dt_prune_pred)
+loan_dt_prune_table
+acc_dt_prune <-  sum(diag(loan_dt_prune_table))/sum(loan_dt_prune_table)
+acc_dt_prune
+
+```
+
+
+## Random Forest
+
+```{r}
+library(randomForest)
+rf.fit <- randomForest(Loan_Status ~ .,   data=loan)
+print(rf.fit) # view results
+importance(rf.fit) # importance of each predictor
+ varImpPlot(rf.fit)
+```
+
+
+## Gradient Boosting
+
+## Model Performancetitle: "Untitled"
