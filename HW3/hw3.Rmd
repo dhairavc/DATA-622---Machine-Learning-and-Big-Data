@@ -31,6 +31,7 @@ library(caret) # For featureplot, classification report
 library(corrplot) # For correlation matrix
 library(AppliedPredictiveModeling)
 library(rpart.plot) #plotting decision trees
+library(randomForestExplainer)
 ```
 
 # Penguins Dataset
@@ -414,6 +415,67 @@ print(rf.fit) # view results
 importance(rf.fit) # importance of each predictor
  varImpPlot(rf.fit)
 ```
+  
+
+## Random Forests Tree (DC)  
+ntree: # of trees  
+mtry: # of random variables for each tree (for classification, sqrt(p) where p is number of variables in x)  
+
+* Find optimal value of how max number of feature samples a given tree in the forest will use  
+* Use optimal value to build random forest  
+
+```{r}
+set.seed(55)
+
+min_tree_var <- tuneRF(x = subset(loan2, select = -Loan_Status), y=loan2$Loan_Status, ntreeTry = 500)
+val_opt <- min_tree_var [,"mtry"][which.min(min_tree_var [,"OOBError"])]
+
+loan_rf <- randomForest(Loan_Status ~., data = loan2, importance = TRUE, ntree=500, mtry = val_opt)
+loan_rf
+
+```
+  
+  
+Out of Bag Error stabilizes at around 100 trees  
+```{r}
+plot(loan_rf, col = c("black", "red", "green"), lty = c(1, 1, 1), main = "Predicted Loan Error Rates")
+legend("right", c(OOB = "Out of Bag Error", "Denied", "Appoved"), col = c("black", "red", "green"), lty = c(1, 1, 1))
+```
+  
+Variable importance is a scale of a given variable's predictive power and is taken by taking the average purity of child nodes that the split causes across all trees in the forest. Variables with large increases in purity are considered more "important"  
+  
+Below is a table of the predictor variables and their various importance factors
+```{r}
+
+var_imp <- measure_importance(loan_rf)
+var_imp
+```
+  
+Predictors from the bootstrapped sample set that will give the highest purity are selected first. 
+Credit History looks to be one of the most important predictors because:  
+* Is usually at the root on most sampled trees.  
+* Has the lowest average depth 
+* Most often chosen as a root  
+
+```{r}
+plot_min_depth_distribution(min_depth_distribution(loan_rf), mean_sample = "relevant_trees")
+plot_multi_way_importance(var_imp, size_measure = "times_a_root")
+```
+  
+Looking at the multi-way importance plot we see that Credit History:  
+* has the largest accuracy decrease if the variable is omitted from model  
+* It has the highest Gini decrease of all variables  
+```{r}
+plot_multi_way_importance(loan_rf, x_measure = "accuracy_decrease", y_measure = "gini_decrease")
+```
+Random Forest Accuracy
+```{r}
+
+acc_rf <-  sum(diag(loan_rf$confusion))/sum(loan_rf$confusion)
+acc_rf
+
+```
+
 
 
 ## Gradient Boosting
