@@ -34,6 +34,7 @@ library(rpart) # For Decision Trees models
 library(rpart.plot) # For Decision Tree Plots
 library(randomForest) # For Random Forest models
 library(randomForestExplainer) # For Random Forest Variable Importance Analysis
+library (gbm) #Gradient Boosting
 ```
 
 # Penguins Dataset
@@ -234,7 +235,6 @@ loan <- loan_raw
 
 ```{r}
 head(loan)
-table(complete.cases(loan))
 ```
 
 ```{r message=TRUE, warning=FALSE}
@@ -261,11 +261,18 @@ loan$Credit_History <- as.factor(loan$Credit_History)
 ```
 
 #### Imputation of Missing Values
+Looking at the Pattern plot of missing values, we see a slight discernible pattern from variable to variable and observation to observation. Therefore this dataset has missing values at random (MAR), such that the probability of value of a given missing predictor observation depends on a observed value of a different predictor variable. 
 
+A simple way to dealing with missing values is to conduct "complete case analysis" in that any observations which have a missing value for a given predictor are dropped. However given the small number of observations (614) on this dataset 
 ```{r echo=FALSE, message=FALSE, warning=FALSE}
 mice_plot <- aggr(loan, col=c('#F8766D','#00BFC4'), numbers=TRUE, sortVars=TRUE, labels=names(loan), cex.axis=.7, gap=3, ylab=c("Missing data","Pattern"))
 ```
 
+Given this assumption, we can use the MICE (Multivariate Imputation via Chained Equations) package to impute the missing values throughout the dataset. For each type of predictor variable we will use:  
+  
+* Numeric Variables: Predictive Mean Matching (ppm)  
+* Binary Variables: Logistic Regression (logreg)  
+* Factor Variables (3+ levels): Bayesian Polytomous Regression  
 
 ```{r message=FALSE, warning=FALSE}
 # pmm for numerical variables, logreg for binary factor variables and polyreg for multilevel factor variables
@@ -384,22 +391,28 @@ testing  <- loan[-trainIndex,]
 
 ## Decision Trees
 
-MI: Include basic description of method
+A Decision Tree is a type of supervised learning model where the data is recursively split into two or more sub-populations given a criteria. Each split is headed by a node, where the upper most node is called the root node, and nodes resulting in no more additional splits called terminal (leaf) nodes. All other nodes are considered internal nodes. Based on a given population of observations, the population is split into sub-populations with the criteria that each split distinguishes the sub-population better than the previous split. This splitting recursively continues on different predictor variables such that a leaf nodes can make accurate predictions/conclusions on a given observation
+
+The Decision Tree model can be used for regression and classification. In this case we use the model for classification of loan approvals 
 
 ### Simple Tree
-Grow decision tree using Information Gain split function.  
-Cost Complexity set to 0 to grow base line tree to later prune.  
-The CP is the amount by which splitting a given node improved the relative error, in other words, it is the minimum improvement in the overall model needed at each node to justify the split.
+The 1st step is to grow a baseline decision tree based on splits generating the most Information Gain, which is based on the decrease in entropy after a dataset is split on a given attribute.    
+
+Post growing a baseline tree we will need to decide if it requires purning so that we can remove leaf nodes for which we are not able to draw accurate conclusions on. Given that we want to do this, the Cost Complexity parameter set to 0. 
+
+The Cost Complexity parameter is slightly different from Information Gain and Gini index, but conceptually it is similar. The parameter the amount by which splitting a given node improved the relative error, in other words, it is the minimum improvement in the overall model needed at each node to justify the split. 
 ```{r}
 loan_dt <- rpart(Loan_Status ~., data = training, method = "class",
                  parms = list(split="information"), control = rpart.control(cp=0))
 loan_dt
 
 ```
-Plot tree
+Given the baseline tree we see that it is 8 levels deep. Each node shows the predicted class, the probability of that class and the percentage of observations that fall into the given node.
+
+Looking at the splits we see that after rejecting an applicant based based on the lack of credit history, the applicant has a 81% percent of being approved regardless of all the other variables. If we factor in Income (TotalIncome) which is an important feature of any loan application, the percentage of approval only increases by 1% to 82%. Loan Amount and then Property Area respectively also only increase accuracy by 1% each.
 
 ```{r, fig.height=10, fig.width=14}
-rpart.plot(loan_dt)
+rpart.plot(loan_dt, box.col = c("pink", "palegreen3")[loan_dt$frame$yval])
 
 ```
 
@@ -409,32 +422,36 @@ loan_dt_pred <- predict(loan_dt, testing, type = "class")
 loan_dt_table <- table(Actual = testing$Loan_Status, Predicted = loan_dt_pred)
 loan_dt_table
 acc_dt_base <-  sum(diag(loan_dt_table))/sum(loan_dt_table)
-acc_dt_base
+
+acc_df<- data.frame(Model = "Base Decision Tree", Accuracy = acc_dt_base)
+
+cat("Accuracy: ", acc_dt_base)
 ```
 ### Pruned Tree
-Find Cost Complexity value that has the lowest cross-validation error rate  
 
-*For practical reasons, we chose to find the cost complexity parameter where pruning the tree will result in atleast 2 splits 
+We now try to prune the tree based on cross-validated error rates. In other words, we will try to find a Cost Complexity pramater which has the lowest cross-validation error rate and then supply this value back into growing the decision tree, but stop growing past a certain nodes where the cross-validation error rate is not minimal
+
+From the below we see that the error rate is minimized when the tree is only at 2 levels. This indicates the Decision Tree is provides the most accurate predictions at 2 levels, which is just 1 split on Credit History. This is an unrealistic tree and for practical reasons, we chose to find the cost complexity parameter where pruning the tree will result in atleast 2 splits 
 
 ```{r}
 
 plotcp(loan_dt)
-
 
 #cost complexity parameter where number of splits is greater than 1 AND the cross-validation error is minimum
 
 #min_err <- loan_dt$cptable[which.min(loan_dt$cptable[,"xerror"]),"CP"]
 cost_complexity_dt <- data.frame(printcp(loan_dt))
 min_err <- (cost_complexity_dt %>% filter(nsplit > 1) %>% slice(which.min(xerror)))$CP
-min_err
+
+cat("Minimum Error: ", min_err)
 ```
 
-Prune tree based on CP value that has lowest cross validation error rate
+Prune tree based on CP value that has lowest cross validation error rate with atleaset 2 splits. The resulting tree is 3 levels levels and the most significant predictors are Credit History and Total Income
 
 ```{r}
 loan_dt_prune <- prune(loan_dt, min_err)
 plotcp(loan_dt_prune)
-rpart.plot(loan_dt_prune)
+rpart.plot(loan_dt_prune, box.col = c("pink", "palegreen3")[loan_dt$frame$yval])
 ```
 
 Accuracy of pruned tree
@@ -443,8 +460,9 @@ loan_dt_prune_pred <- predict(loan_dt_prune, testing, type = "class")
 loan_dt_prune_table <- table(Actual = testing$Loan_Status, Predicted = loan_dt_prune_pred)
 loan_dt_prune_table
 acc_dt_prune <-  sum(diag(loan_dt_prune_table))/sum(loan_dt_prune_table)
-acc_dt_prune
 
+acc_df <- rbind(acc_df, data.frame(Model = "Pruned Decision Tree", Accuracy =acc_dt_prune))
+cat("Accuracy: ", acc_dt_prune)
 ```
 
 
@@ -452,13 +470,18 @@ acc_dt_prune
 
 ## Random Forest
 
-MI: Include basic description of method
+The Random Forest model is similar to Decision Tree model in terms of how it constructs a tree. The difference is that the Random Forest model is a collection (ensamble) of Decision Trees. Each of these trees in the forest are constructed bootstrapped observations and randomized subset of features. Each tree in the forest then classifies a given observation and then the majority of the classification class is determined as the predicted class for that given observation
 
-ntree: # of trees  
-mtry: # of random variables for each tree (for classification, sqrt(p) where p is number of variables in x)  
+To build an optimal forest there are 2 parameters that we can tune:  
+  
+* ntree: the number of trees in the forest
+* mtry: the number of of random variables for each tree 
 
-* Find optimal value of how max number of feature samples a given tree in the forest will use  
-* Use optimal value to build random forest  
+For classification datasets, the generally recommended subset of variables recommended is the squareroot of the total number of predictor variables. In our dataset this is this is 3, since we have 10 total predictor variables
+
+Form the results below we see that 2 random variables per tree in the forest generates the lowest Out of Bag error. In quick summary, when using bootstrapped samples, about a third of the observations do not end up getting used in construction of the trees, and the model's prediction on these new (to the model) observations is the Out of Bag Error
+
+Therefore we will set the mtry parameter to the number of variables that generate the lowest Out of Bag error rate
 
 ```{r}
 
@@ -472,15 +495,19 @@ loan_rf
 ```
   
   
-Out of Bag Error stabilizes at around 100 trees  
+Next we want to see if we have generated enough trees so that the Out Of Bag (OOB Error) error rates are minimum. From the below we see that the  OOB error rate is decreasing with 1-20 trees, and rate stabilizes that at around 100 trees. Therefore for this dataset 500 trees is more than enough to minimize the OOB Error rate
 ```{r}
 plot(loan_rf, col = c("black", "red", "green"), lty = c(1, 1, 1), main = "Predicted Loan Error Rates")
 legend("right", c(OOB = "Out of Bag Error", "Denied", "Appoved"), col = c("black", "red", "green"), lty = c(1, 1, 1))
 ```
   
-Variable importance is a scale of a given variable's predictive power and is taken by taking the average purity of child nodes that the split causes across all trees in the forest. Variables with large increases in purity are considered more "important"  
+An area of interest like Decision Trees is Variable importance, which is a scale of a given variable's predictive power and is taken by taking the average purity of child nodes that the split causes across all trees in the forest. Variables with large increases in purity are considered more "important"  
   
-Below is a table of the predictor variables and their various importance factors
+Below is a table of the predictor variables and their various importance factors. Some definitions to help understand the below table:  
+  
+* Accuracy Decrease: the decrease in accuracy of the overall model if a given predictor is not used in the model  
+* Gini Decrease: For each split that is made using a given predictor there is a reduction in the Gini Index. The Gene Decrease is an average of this Gini Index reduction across the entire forest   
+* Mean_min_depth: The depth in a tree that a give node occurred in  
 ```{r}
 
 var_imp <- measure_importance(loan_rf)
@@ -489,8 +516,9 @@ var_imp[,1:7]
   
 Predictors from the bootstrapped sample set that will give the highest purity are selected first. 
 Credit History looks to be one of the most important predictors because:  
-* Is usually at the root on most sampled trees.  
-* Has the lowest average depth 
+  
+* Is usually at the root on most sampled trees  
+* Has the lowest average depth  
 * Most often chosen as a root  
 
 ```{r}
@@ -499,24 +527,90 @@ plot_multi_way_importance(var_imp, size_measure = "times_a_root")
 ```
   
 Looking at the multi-way importance plot we see that Credit History:  
+  
 * has the largest accuracy decrease if the variable is omitted from model  
 * It has the highest Gini decrease of all variables  
+  
 ```{r}
 plot_multi_way_importance(loan_rf, x_measure = "accuracy_decrease", y_measure = "gini_decrease")
 ```
-Random Forest Accuracy
+  
+Random Forest Accuracy  
 ```{r}
 loan_rf_pred <- predict(loan_rf, testing, type = "class")
 loan_rf_table <- table(Actual = testing$Loan_Status, Predicted = loan_rf_pred)
 loan_rf_table
 acc_rf <-  sum(diag(loan_rf_table))/sum(loan_rf_table)
-acc_rf
 
+cat("Accuracy: ", acc_rf)
+acc_df<- rbind(acc_df, data.frame(Model = "Random Forest", Accuracy = acc_rf))
 
 ```
 
 ## Gradient Boosting
 
-MI: Include basic description of method
+This is another kind on ensemble algorithm in which several model are combined, but instead of running the model is parallel and then combining results, here model are run in series, with each output serving as an input to the next. With each new run of the classifier, the results are improved. Also, each classifiers performance can actually be rather low (shallow trees can be used for example), and with feeding the results to a new classifier, the overall effect is an improved performance.
+
+
+
+Run gradient boost model
+
+```{r}
+set.seed(123)
+loan_boost =gbm(Loan_Status ~., data = training, 
+              n.trees=500,
+              interaction.depth=4,
+                shrinkage=0.01,
+              bag.fraction=0.5,
+              distribution="multinomial",
+              verbose=FALSE,
+              cv.folds = 5,
+              n.cores=2
+              )
+```
+
+Check the performance of the model, also check the optimum number of trees for "cv" method.
+Looks like optimum numbers of tress is 111. We will run our predictions with that number.
+
+```{r}
+# Check performance using 5-fold cross-validation
+best.iter <- gbm.perf(loan_boost, method="cv")
+print(best.iter)
+summary(loan_boost)
+```
+From the model we see that features Credit_History, TotalIncome and LoanAmount features are most important variables 
+of the model and Gender is the least(which is good).
+
+
+```{r}
+pred = predict.gbm(loan_boost,
+                    newdata = testing,
+                    n.trees = best.iter,
+                    type = "response")
+```
+
+
+
+
+```{r}
+labels = colnames(pred)[apply(pred, 1, which.max)]
+result = data.frame(testing$Loan_Status, labels)
+cm = confusionMatrix(testing$Loan_Status, as.factor(labels))
+print(cm)
+```
+```{r}
+#labels = colnames(pred)[apply(pred, 1, which.max)]
+loan_boost_table <- table(Actual = testing$Loan_Status, Predicted = labels)
+loan_boost_table
+acc_boost <-  sum(diag(loan_boost_table))/sum(loan_boost_table)
+cat("Accuracy: ", acc_boost)
+acc_df <- rbind(acc_df, data.frame(Model = "Gradient Boosting", Accuracy = acc_boost))
+```
+So with gradient boosting we got 80.32% accuracy.
 
 ## Model Performance
+```{r}
+
+acc_df
+```
+
