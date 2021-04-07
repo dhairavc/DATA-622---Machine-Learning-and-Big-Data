@@ -263,16 +263,16 @@ loan$Credit_History <- as.factor(loan$Credit_History)
 #### Imputation of Missing Values
 Looking at the Pattern plot of missing values, we see a slight discernible pattern from variable to variable and observation to observation. Therefore this dataset has missing values at random (MAR), such that the probability of value of a given missing predictor observation depends on a observed value of a different predictor variable. 
 
-A simple way to dealing with missing values is to conduct "complete case analysis" in that any observations which have a missing value for a given predictor are dropped. However given the small number of observations (614) on this dataset 
+A simple way to dealing with missing values is to conduct "complete case analysis" in that any observations which have a missing value for a given predictor are dropped. However given the small number of observations (614) on this dataset, we will impute the missing values using various predictive models
 ```{r echo=FALSE, message=FALSE, warning=FALSE}
 mice_plot <- aggr(loan, col=c('#F8766D','#00BFC4'), numbers=TRUE, sortVars=TRUE, labels=names(loan), cex.axis=.7, gap=3, ylab=c("Missing data","Pattern"))
 ```
 
-Given this assumption, we can use the MICE (Multivariate Imputation via Chained Equations) package to impute the missing values throughout the dataset. For each type of predictor variable we will use:  
+Given the assumption that this dataset has Missing At Random Values, we can use the MICE (Multivariate Imputation via Chained Equations) package to impute the missing values throughout the dataset. For each type of predictor variable we will use:  
   
 * Numeric Variables: Predictive Mean Matching (ppm)  
 * Binary Variables: Logistic Regression (logreg)  
-* Factor Variables (3+ levels): Bayesian Polytomous Regression  
+* Factor Variables (3+ levels): Bayesian Polytomous Regression (polyreg)  
 
 ```{r message=FALSE, warning=FALSE}
 # pmm for numerical variables, logreg for binary factor variables and polyreg for multilevel factor variables
